@@ -19,13 +19,12 @@ import mne
 from mne.preprocessing import find_bad_channels_maxwell
 
 #%% Read data from files
-
-sample_data_raw_file = 'C:/Users/Mario/Documents/_Studium/BA/NFB/data/Rest_raw.fif'
+sample_data_raw_file = 'Z:/imagine.fif'
 raw = mne.io.read_raw_fif(sample_data_raw_file, preload = True, verbose = False)
-raw.crop(tmax = 362)
+# raw.crop(tmax = 362)
 
-fine_cal_file = 'C:/Users/Mario/Documents/_Studium/BA/NFB/data/sss_cal.dat'
-crosstalk_file = 'C:/Users/Mario/Documents/_Studium/BA/NFB/data/ct_sparse.fif'
+fine_cal_file = './calibration_files/sss_cal.dat'
+crosstalk_file = './calibration_files/ct_sparse.fif'
 
 #%% Find bad channels
 
