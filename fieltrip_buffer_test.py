@@ -7,12 +7,12 @@
 import sys
 from fieldtrip import FieldTrip
 
-# Creating and connecting client to Fieldtrip buffer
+# Creating and connecting client to FieldTrip buffer
 ftc = FieldTrip.Client()
 ftc.connect('localhost', 1972)
 
 # Read 100 headers and data frames
-for i in range(10):
+for i in range(100):
     
     # Retrieve header of latest chunk in buffer
     header = ftc.getHeader()
@@ -22,8 +22,9 @@ for i in range(10):
         print('Failed to retrieve header!')
         sys.exit(1)
     
-    # Print general header information (number of channels, sample frequency etc.)
+    # Print general header information (number of channels, sample frequency, etc.)
     print(header)
+
     # Print labels of every channel
     print(header.labels)
     
