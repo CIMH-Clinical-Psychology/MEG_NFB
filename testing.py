@@ -27,31 +27,43 @@ import stimer
 from deepdiff import DeepDiff
 from mne.preprocessing import find_bad_channels_maxwell
 import maxfilter_realtime
+ 
 #%% Read data from files
+def headpos(raw, t_step_max=1.0):
+    chpi_amplitudes = mne.chpi.compute_chpi_amplitudes(raw, verbose = False)
+    chpi_locs = mne.chpi.compute_chpi_locs(raw.info, chpi_amplitudes, t_step_max=t_step_max, verbose = False)
+    head_position = mne.chpi.compute_head_pos(raw.info, chpi_locs, verbose = False)
+    return head_position
+
 fine_cal_file = './calibration_files/sss_cal.dat'
 crosstalk_file = './calibration_files/ct_sparse.fif'
 sample_data_raw_file = 'Z:/rest.fif'
 raw = mne.io.read_raw_fif(sample_data_raw_file, preload = True, verbose = False)
-raw = raw.crop(tmax = 3)
+raw = raw.crop(tmax = 15)
 glob = maxfilter_realtime.glob
 
+
+
 #%% Calculate head position
-# maxfilter_realtime.glob['enable_caching'] = False
-stimer.start()
-head_position1 = maxfilter_realtime.headpos_chunk(raw.copy())  
-t1 = stimer.stop()
+# calculate with original headpos functions for comparing results
 
-maxfilter_realtime.glob['enable_caching'] = True
-# _ = maxfilter_realtime.headpos_chunk(raw.copy().crop(1, 2))   # dummy call to check if other values affect preceding processing
+t_step_max = 0.5
+
+MaxFilterClient = maxfilter_realtime.MaxFilterClient(raw.copy())
 
 stimer.start()
-head_position2 = maxfilter_realtime.headpos_chunk(raw.copy())  
+headpos_live = MaxFilterClient.headpos(t_step_max=t_step_max)   
 t2 = stimer.stop()
 
-np.testing.assert_array_equal(head_position1, head_position2)
+stimer.start()
+headpos_orig = headpos(raw.copy(), t_step_max=t_step_max)
+t1 = stimer.stop()
+
+np.testing.assert_array_equal(headpos_live, headpos_orig)
 
 print(f'{t1:.2f}s - {t2:.2f}s = {t1-t2:.2f}s faster')
 stop
+
 #%% Apply Maxwell filtering
 
 
