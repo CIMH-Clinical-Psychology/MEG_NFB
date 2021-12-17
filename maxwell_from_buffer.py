@@ -10,7 +10,7 @@ import mne
 from mne.preprocessing import maxwell_filter, find_bad_channels_maxwell
 from mne.chpi import compute_chpi_amplitudes, compute_chpi_locs, compute_head_pos
 
-import FieldTrip as ft
+from fieldtrip import FieldTrip as ft
 
 from scipy import signal
 
@@ -68,7 +68,9 @@ header = ftc.getHeader()
 newSamples = header.nSamples
 oldSamples = header.nSamples
 
-while header.nSamples <= 362999:        # Maximum number of samples = 363000
+maxSamples = 362999
+
+while header.nSamples <= maxSamples:        # Maximum number of samples = 363000
     if newSamples >= 1000:
         
         print('#######################################')
