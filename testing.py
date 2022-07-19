@@ -37,7 +37,7 @@ def headpos(raw, t_step_max=1.0):
 
 fine_cal_file = './calibration_files/sss_cal.dat'
 crosstalk_file = './calibration_files/ct_sparse.fif'
-sample_data_raw_file = 'Z:/rest.fif'
+sample_data_raw_file = 'Z:/desmrrest/seq12/pilot_11/MEG/RS2.fif'
 raw = mne.io.read_raw_fif(sample_data_raw_file, preload = True, verbose = False)
 raw = raw.crop(tmax = 15)
 glob = maxfilter_realtime.glob
