@@ -10,7 +10,7 @@ import mne
 from mne.preprocessing import maxwell_filter, find_bad_channels_maxwell
 from mne.chpi import compute_chpi_amplitudes, compute_chpi_locs, compute_head_pos
 
-from fieldtrip import FieldTrip as ft
+import FieldTrip as ft
 
 from scipy import signal
 
@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 fine_cal_file = 'C:/Users/Mario/Documents/_Studium/BA/NFB/data/sss_cal.dat'
 crosstalk_file = 'C:/Users/Mario/Documents/_Studium/BA/NFB/data/ct_sparse.fif'
 
-sample_data_raw_file = 'C:/Users/Mario/Documents/_Studium/BA/NFB/data/Rest_raw.fif'
+sample_data_raw_file = 'Z:/desmrrest/testing/pilot_helene/RS.fif'
 raw_from_file = mne.io.read_raw_fif(sample_data_raw_file, preload = True, verbose = False)
 
 #%% Connect to buffer
