@@ -10,18 +10,20 @@ import mne
 from mne.preprocessing import maxwell_filter, find_bad_channels_maxwell
 from mne.chpi import compute_chpi_amplitudes, compute_chpi_locs, compute_head_pos
 
-from fieldtrip import FieldTrip as ft
+import FieldTrip as ft
 
 from scipy import signal
+import utils
 
 import matplotlib.pyplot as plt
+import stimer
 
 #%% Load calibration and crosstalk files
 
-fine_cal_file = 'C:/Users/Mario/Documents/_Studium/BA/NFB/data/sss_cal.dat'
-crosstalk_file = 'C:/Users/Mario/Documents/_Studium/BA/NFB/data/ct_sparse.fif'
+fine_cal_file = './calibration_files/sss_cal.dat'
+crosstalk_file = './calibration_files/ct_sparse.fif'
 
-sample_data_raw_file = 'C:/Users/Mario/Documents/_Studium/BA/NFB/data/Rest_raw.fif'
+sample_data_raw_file = utils.get_demo_rest_fif()
 raw_from_file = mne.io.read_raw_fif(sample_data_raw_file, preload = True, verbose = False)
 
 #%% Connect to buffer
@@ -72,7 +74,7 @@ maxSamples = 362999
 
 while header.nSamples <= maxSamples:        # Maximum number of samples = 363000
     if newSamples >= 1000:
-        
+        stimer.start()
         print('#######################################')
         print('##########  NEW CHUNK  ################')
         print('#######################################\n')
@@ -112,7 +114,7 @@ while header.nSamples <= maxSamples:        # Maximum number of samples = 363000
         
         # Append list of Maxwell-filtered Raw objects
         raws_sss_list.append(raw_sss)
-    
+        stimer.stop()
     # Calculate new sample interval
     header = ftc.getHeader()
     newSamples = header.nSamples - oldSamples

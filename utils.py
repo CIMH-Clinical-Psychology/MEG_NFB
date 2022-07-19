@@ -4,9 +4,79 @@ Created on Wed Jul  6 15:25:30 2022
 
 @author: Simon Kern
 """
+import os
+
+import pooch
 import mne
 import numpy as np
+from mne.preprocessing import maxwell_filter
 from mne.io.pick import _picks_to_idx, pick_info
+from joblib.memory import Memory
+
+# use caching for reading the raw file
+mem = Memory(os.path.expanduser('~/mne-nfb/cache/')) 
+mne.io.read_raw = mem.cache(mne.io.read_raw)
+
+
+def get_demo_rest_fif():
+    """
+    Download the demo file
+    which is a 6 minute resting state 
+    session, using pooch
+
+    Returns
+    -------
+    file : str
+        path of the downloaded fif file.
+
+    """
+    url = 'https://cloud.skjerns.de/index.php/s/Boz57e2ACGNnxXR/download/rest.fif'
+    path = os.path.expanduser('~/.meg_nfb/')
+    
+    file = pooch.retrieve(url, 'md5:d22d4fb58e654f4f5255aeeaaec79d82',
+                          fname='rest.fif',
+                          path=path, progressbar=True)
+    return file
+
+
+def create_comparison_files():
+    """
+    creates reference SSS-filtered files for the demo file
+
+    Returns
+    -------
+    None.
+
+    """
+    crosstalk_file = './calibration_files/ct_sparse.fif'
+    fine_cal_file = './calibration_files/sss_cal.dat'    
+    
+    fif_file = get_demo_rest_fif()
+    
+    save_to = f'{fif_file[:-4]}_sss_mc.fif'
+    if os.path.exists(save_to):
+        return save_to
+    
+    raw = mne.io.read_raw(fif_file, preload=True)
+    
+    # Estimate HPI coil amplitudes
+    chpi_amplitudes = mne.chpi.compute_chpi_amplitudes(raw)
+
+    # Calculate HPI coil locations from amplitudes
+    chpi_locs = mne.chpi.compute_chpi_locs(raw.info, chpi_amplitudes)
+
+    # Calculate continuous head position from HPI coil amplitudes and locations
+    head_position = mne.chpi.compute_head_pos(raw.info, chpi_locs)
+
+    raw_sss = maxwell_filter(raw, cross_talk = crosstalk_file, 
+                                     calibration = fine_cal_file, 
+                                     head_pos = head_position, 
+                                     mag_scale = 'auto', 
+                                     int_order = 8, 
+                                     ext_order = 3)
+    raw_sss.save(save_to)
+    return save_to
+
 
 def epoch2raw(epoch, info=None, verbose='WARNING'):
     """
