@@ -549,7 +549,6 @@ class FieldTripClientSimulator():
         self.sfreq = sfreq
         self.nchan = nchan
         self.last_times = 0
-
         
     def get_data(self, chunksize=500):
         data = np.random.rand(self.nchan, chunksize)

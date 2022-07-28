@@ -120,7 +120,7 @@ class DataClient(Process):
     def _get_buffer(self):
         return np.ndarray(self.buffer.shape, dtype=self.buffer.dtype, buffer=self.buffer_shm.buf)
     
-    def __init__(self, client, buffersize=10):
+    def __init__(self, client, buffersize=60):
         super(DataClient, self).__init__()
         
         self.lock =  Lock()
@@ -132,27 +132,60 @@ class DataClient(Process):
         self.sfreq = int(self.get_measurement_info(client, 'sfreq'))
         self.n_chs = self.get_measurement_info(client, 'nchan')
         self.pull_size = int(np.ceil(self.sfreq / 10))
-        buffer = np.zeros([self.n_chs, self.sfreq*buffersize], dtype=np.float64)
         self.shm = {}
+
+        self.shared_arrs = {'buffer': {'shape': [self.n_chs, self.sfreq*buffersize],
+                            'dtype': np.float64},
+                            'times': {'shape': [self.sfreq*self.buffersize],
+                            'dtype': np.int64,}
+                           }
+        
+        for name, vals in self.shared_arrs.items():
+            arr = np.zeros(vals['shape'], dtype=vals['dtype'])
+            shm = shared_memory.SharedMemory(create=True, size=arr.nbytes)
+            self.shared_arrs[name]['shm'] = shm # store in instance var as well
+            self.__dict__[name] = np.ndarray(vals['shape'], buffer=shm.buf, 
+                                             dtype=vals['dtype'])
+        # create our data buffer
+        buffer = np.zeros([self.n_chs, self.sfreq*buffersize], dtype=np.float64)
         self.shm['buffer'] = shared_memory.SharedMemory(create=True, size=buffer.nbytes)
         self.buffer = np.ndarray([self.n_chs, self.sfreq*self.buffersize], 
                              buffer=self.shm['buffer'].buf, dtype=np.float64)
-
-        # self.buffer = np.ndarray(buffer.shape, dtype=buffer.dtype, buffer=buffer_shm.buf)
-        # self.buffer[:] = 0
-        # times = np.zeros(buffersize*self.pull_size, dtype=np.float64)
         
-        # self.times_shm = shared_memory.SharedMemory(create=True, size=self.times.nbytes)
-        # self.times = np.ndarray(times.shape, dtype=times.dtype, buffer=times_buff.buf)
-        # self.times=[0]
+        # create times buffer
+        times = np.zeros([self.sfreq*buffersize], dtype=np.int64)
+        self.shm['times'] = shared_memory.SharedMemory(create=True, size=times.nbytes)
+        self.times = np.ndarray([self.sfreq*self.buffersize], 
+                             buffer=self.shm['times'].buf, dtype=np.int64)
+
         
     def run(self):
-       
+        
+        shared_arrs = {}
+        # this does not work, I do not know why
+        for name, vals in self.shared_arrs.items():
+            shm_name = vals['shm'].name
+
+            shm = shared_memory.SharedMemory(shm_name)
+            print('connect', name, 'to', shm_name)
+            print(vals['shape'], vals['dtype'], shm)
+            arr = np.ndarray(vals['shape'], buffer=shm.buf, 
+                                           dtype=vals['dtype'])
+            shared_arrs[name] = arr
+            globals()[name] = arr
+        buffer2 = shared_arrs['buffer']
+
         print('starting process', flush=True)
         time.sleep(0.5)
-        shm = shared_memory.SharedMemory(self.shm['buffer'].name)
+        buf_shm = shared_memory.SharedMemory(self.shm['buffer'].name)
+        times_shm= shared_memory.SharedMemory(self.shm['times'].name)
         buffer = np.ndarray([self.n_chs, self.sfreq*self.buffersize], 
-                             buffer=shm.buf, dtype=np.float64)
+                              buffer=buf_shm.buf, dtype=np.float64)
+        np.testing.assert_array_almost_equal(buffer, buffer2)
+        times = np.ndarray([self.sfreq*self.buffersize], 
+                             buffer=times_shm.buf, dtype=np.int64)
+
+        times = shared_arrs['times']
 
         # times = self._get_times()
         print('loop', flush=True)
@@ -164,12 +197,11 @@ class DataClient(Process):
             print('loop', flush=True)
             data, timestamp = self.client.get_data(self.pull_size)
             with self.lock:
-                # self.times[:-self.pull_size] = self.times[self.pull_size:]
-                # self.times[-self.pull_size:] = timestamp
+                times[:-self.pull_size] = times[self.pull_size:]
+                times[-self.pull_size:] = timestamp
                 buffer[:, :-self.pull_size] = buffer[:, self.pull_size:]
                 buffer[:, -self.pull_size:] = data
-                pass
-            time.sleep(0.1)
+            time.sleep(0.25)
             
         print('done', flush=True)
    

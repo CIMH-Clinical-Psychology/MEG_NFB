@@ -10,8 +10,11 @@ to a streaming server (e.g. FieldTripBuffer or LSLServer, )
 import os
 import mne
 import time
-import matplotlib 
-matplotlib.use('TkAgg')
+import matplotlib
+try:
+    matplotlib.use('TkAgg')
+except:
+    pass
 from mne.preprocessing import maxwell_filter, find_bad_channels_maxwell
 from mne.chpi import compute_chpi_amplitudes, compute_chpi_locs, compute_head_pos
 from mne_realtime import LSLClient, MockLSLStream, FieldTripClient
@@ -58,9 +61,9 @@ if __name__=='__main__':
         # print(type(dataclient.times))
         with dataclient.lock:
             data = dataclient.buffer
-            plt.plot(data[0])
-        plt.show(block=False)
-        plt.pause(0.1)
-        time.sleep(2)
+        plt.plot(data[0])
+        
+        # plt.show(block=False)
+        plt.pause(1)
     # self = LiveProcessor(client, movement_corr=True)
     
