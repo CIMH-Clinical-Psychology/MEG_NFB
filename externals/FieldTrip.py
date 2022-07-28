@@ -1,6 +1,5 @@
 """
 FieldTrip buffer (V1) client in pure Python
-
 (C) 2010 S. Klanke
 """
 
@@ -9,6 +8,7 @@ import socket
 import struct
 import numpy
 import unicodedata
+import numpy as np
 
 VERSION = 1
 
@@ -210,6 +210,7 @@ class Event:
                         value_numel, int(self.sample), int(self.offset),
                         int(self.duration), bufsize)
         return S + type_buf + value_buf
+
 
 
 class Client:
@@ -539,9 +540,55 @@ class Client:
 
         return struct.unpack('II', resp_buf[0:8])
 
+
+
+class FieldTripClientSimulator():
+    """Simulate a data stream via random data"""
+    def __init__(self, hostname='irrelevant', port=0,
+                 sfreq=1000, nchan=320):
+        self.sfreq = sfreq
+        self.nchan = nchan
+        self.last_times = 0
+
+        
+    def get_data(self, chunksize=500):
+        data = np.random.rand(self.nchan, chunksize)
+        times = np.arange(self.last_times, self.last_times+chunksize)
+        self.last_times += chunksize
+        return data, times
+    
+    def get_measurement_info(self):
+        client_info = {'nchan': self.nchan,
+                       'sfreq': self.sfreq}
+        return client_info
+
+class FieldTripClient():
+    
+    def __init__(self, hostname, port=1972):
+        client = Client()
+        client.connect(hostname=hostname, port=port)
+        self.header = client.getHeader()
+        self.client = client
+        
+    def get_data(self, chunksize=500):
+        assert self.client.isConnected, 'Client not connected any longer'
+        last_smp = self.client.poll()[0]
+        index = [last_smp-chunksize, last_smp-1]
+        data = self.client.getData(index)
+        times = np.linspace(*index, chunksize).astype(int)
+        print('getting', index)
+        return data, times
+    
+    def get_measurement_info(self):
+        client_info = {'nchan': len(self.header.labels),
+                       'sfreq': self.header.fSample}
+        return client_info
+
+
 if __name__ == "__main__":
     # Just a small demo for testing purposes...
     # This should be moved to a separate file at some point
+    stop
     import sys
 
     hostname = 'localhost'
