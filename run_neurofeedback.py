@@ -12,20 +12,21 @@ import mne
 import time
 import matplotlib
 try:
+    # somebody (probably me) put this here, but I don't remember why.
     matplotlib.use('TkAgg')
 except:
     pass
-from mne.preprocessing import maxwell_filter, find_bad_channels_maxwell
-from mne.chpi import compute_chpi_amplitudes, compute_chpi_locs, compute_head_pos
+
 from mne_realtime import LSLClient, MockLSLStream, FieldTripClient
 import numpy as np
 import matplotlib.pyplot as plt
 import utils
-import stimer
 from joblib.memory import Memory
-from maxfilter_realtime import MaxFilterClient, DataClient
+from maxfilter_realtime import MaxFilterClient, MaxFilterCoordinator
 from externals.FieldTrip import FieldTripClient
 from externals.FieldTrip import FieldTripClientSimulator
+
+
 # use caching for reading the raw file
 mem = Memory(os.path.expanduser('~/mne-nfb/cache/')) 
 mne.io.read_raw = mem.cache(mne.io.read_raw)
@@ -49,18 +50,21 @@ if __name__=='__main__':
     # stream = MockLSLStream('mock', raw_orig, 'all', time_dilation=2).start()
     # client = LSLClient(info=raw_orig.info, host='mock', wait_max=10).start()
     # client = FieldTripClient('localhost')
-    client=FieldTripClientSimulator()
-    # print('starting dataclient')
-    dataclient = DataClient(client)
-    # print('init')
+    # start a FieldTripBuffer Simulator. It will feed 1000 samples/second.
+    client = FieldTripClientSimulator()
+    
+    # start the data client that is the central hub of retrieving
+    # and storing the data from the MEG into our shared memory
+    dataclient = MaxFilterCoordinator(client)
+    
     dataclient.start()
-    print('now?')
+    
     plt.figure()
     for i in range(10):
         print('main running...')
         # print(type(dataclient.times))
         with dataclient.lock:
-            data = dataclient.buffer
+            data = dataclient._buffer
         plt.plot(data[0])
         
         # plt.show(block=False)

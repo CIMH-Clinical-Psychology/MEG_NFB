@@ -543,7 +543,7 @@ class Client:
 
 
 class FieldTripClientSimulator():
-    """Simulate a data stream via random data"""
+    """Simulate a data stream via random data with minimal interface"""
     def __init__(self, hostname='irrelevant', port=0,
                  sfreq=1000, nchan=320):
         self.sfreq = sfreq

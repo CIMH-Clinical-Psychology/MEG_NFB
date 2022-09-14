@@ -17,14 +17,13 @@ from functools import wraps
 # from functools import partial
 # from math import factorial
 from externals.FieldTrip import Client as FtClient
-
+import logging
 import numpy as np
 import mne
 import stimer
 import time
 from multiprocessing import Lock
 from multiprocessing.managers import SharedMemoryManager
-from share_array.share_array import get_shared_array, make_shared_array
 
 from mne.io.pick import (pick_types, pick_channels, pick_channels_regexp,
                       pick_info)
@@ -62,6 +61,7 @@ from mne.transforms import (apply_trans, invert_transform, _angle_between_quats,
 from mne.utils import (verbose, logger, use_log_level, _check_fname, warn,
                     _validate_type, ProgressBar, _check_option)
 from multiprocessing import Process, Queue, shared_memory
+from multiprocessing.shared_memory import SharedMemory
 from threading import Thread
 
 global glob
@@ -90,6 +90,12 @@ compute_whitener = cached(mne.chpi.compute_whitener)
 make_ad_hoc_cov = cached(mne.chpi.make_ad_hoc_cov)
 _magnetic_dipole_field_vec = cached(mne.chpi._magnetic_dipole_field_vec)
 
+class SharedArray():
+    
+    def __init__():
+        pass
+    
+    
 
 
 
@@ -110,63 +116,74 @@ class HeadPosProcessor(Process):
             
 
       
-class DataClient(Process):
-    """Thread that continuously fetches data in 100ms chunks from the
-    stream"""
+class MaxFilterCoordinator(Process):
+    """Thread that continuously fetches data in 100ms chunks from the stream
+    
+    You can access the data via this command. It is important to access it
+    with the lock ackquired, as you will create memory violations otherwise
+    
+    ```
+    with dataclient.lock:
+        data = dataclient._buffer
+    ```
+    """
     
     def _get_times(self):
-        return np.ndarray(self.times.shape, dtype=self.times.dtype, buffer=self.times_shm.buf)
+        return np.ndarray(self.times.shape, dtype=self.times.dtype,
+                          buffer=self.times_shm.buf)
     
     def _get_buffer(self):
-        return np.ndarray(self.buffer.shape, dtype=self.buffer.dtype, buffer=self.buffer_shm.buf)
+        return np.ndarray(self.buffer.shape, dtype=self.buffer.dtype,
+                          buffer=self.buffer_shm.buf)
     
     def __init__(self, client, buffersize=60):
         super(DataClient, self).__init__()
         
-        self.lock =  Lock()
+        self.lock = Lock()  # this is the master lock
         
-        # manager = SharedMemoryManager()
-        # self.manager.SharedMemory(size=128)
-        self.client = client
+        self.client = client  # of type FieldTripClient
         self.buffersize = buffersize
         self.sfreq = int(self.get_measurement_info(client, 'sfreq'))
         self.n_chs = self.get_measurement_info(client, 'nchan')
         self.pull_size = int(np.ceil(self.sfreq / 10))
-        self.shm = {}
+        self._shm = {}
 
-        self.shared_arrs = {'buffer': {'shape': [self.n_chs, self.sfreq*buffersize],
-                            'dtype': np.float64},
-                            'times': {'shape': [self.sfreq*self.buffersize],
-                            'dtype': np.int64,}
-                           }
+        self._shared_arrs = {'buffer': {'shape': [self.n_chs, 
+                                                   self.sfreq*buffersize],
+                             'dtype': np.float64},
+                             'times': {'shape': [self.sfreq*self.buffersize],
+                             'dtype': np.int64,}
+                             }
         
-        for name, vals in self.shared_arrs.items():
+        for name, vals in self._shared_arrs.items():
             arr = np.zeros(vals['shape'], dtype=vals['dtype'])
-            shm = shared_memory.SharedMemory(create=True, size=arr.nbytes)
-            self.shared_arrs[name]['shm'] = shm # store in instance var as well
-            self.__dict__[name] = np.ndarray(vals['shape'], buffer=shm.buf, 
-                                             dtype=vals['dtype'])
+            shm = SharedMemory(create=True, size=arr.nbytes)
+            self._shared_arrs[name]['shm'] = shm # store in instance var as well
+            # self.__dict__[name] = np.ndarray(vals['shape'], buffer=shm.buf, 
+            #                                  dtype=vals['dtype'])
         # create our data buffer
         buffer = np.zeros([self.n_chs, self.sfreq*buffersize], dtype=np.float64)
-        self.shm['buffer'] = shared_memory.SharedMemory(create=True, size=buffer.nbytes)
-        self.buffer = np.ndarray([self.n_chs, self.sfreq*self.buffersize], 
-                             buffer=self.shm['buffer'].buf, dtype=np.float64)
+        self._shm['buffer'] = SharedMemory(create=True, size=buffer.nbytes)
+        self._buffer = np.ndarray([self.n_chs, self.sfreq*self.buffersize], 
+                             buffer=self._shm['buffer'].buf, dtype=np.float64)
         
         # create times buffer
         times = np.zeros([self.sfreq*buffersize], dtype=np.int64)
-        self.shm['times'] = shared_memory.SharedMemory(create=True, size=times.nbytes)
+        self._shm['times'] = SharedMemory(create=True, size=times.nbytes)
         self.times = np.ndarray([self.sfreq*self.buffersize], 
-                             buffer=self.shm['times'].buf, dtype=np.int64)
+                             buffer=self._shm['times'].buf, dtype=np.int64)
+
+
 
         
     def run(self):
         
         shared_arrs = {}
         # this does not work, I do not know why
-        for name, vals in self.shared_arrs.items():
+        for name, vals in self._shared_arrs.items():
             shm_name = vals['shm'].name
 
-            shm = shared_memory.SharedMemory(shm_name)
+            shm = SharedMemory(shm_name)
             print('connect', name, 'to', shm_name)
             print(vals['shape'], vals['dtype'], shm)
             arr = np.ndarray(vals['shape'], buffer=shm.buf, 
@@ -177,8 +194,8 @@ class DataClient(Process):
 
         print('starting process', flush=True)
         time.sleep(0.5)
-        buf_shm = shared_memory.SharedMemory(self.shm['buffer'].name)
-        times_shm= shared_memory.SharedMemory(self.shm['times'].name)
+        buf_shm = SharedMemory(self._shm['buffer'].name)
+        times_shm= SharedMemory(self._shm['times'].name)
         buffer = np.ndarray([self.n_chs, self.sfreq*self.buffersize], 
                               buffer=buf_shm.buf, dtype=np.float64)
         np.testing.assert_array_almost_equal(buffer, buffer2)
@@ -213,61 +230,42 @@ class DataClient(Process):
         return self.client_info if attr is None else self.client_info[attr]      
     
     
-class LiveProcessor:
+class SharedMemoryWorker(Process):
+    """Execute given function and save results in given shared memory
     
-    def __init__(self, client, movement_corr=False, crosstalk_file=None,
-                 fine_cal_file=None):
-        self.client = client
-        self.crosstalk_file = crosstalk_file
-        self.fine_cal_file = fine_cal_file
-        self.movement_corr = movement_corr
-        self.data = []
-                
-        
-    def start_loop(self):
-        self.client_info = self.get_measurement_info()
-        self.sfreq = int(self.client_info['sfreq'])
-        # create shared memory buffer of 5 seconds
-        self.buffer = shm.zeros(self.sfreq*5, dtype=np.float64)
-
-        for i in range(5):
-            self.filter_next()
-        
-    @stimer.wrapper
-    def filter_next(self):
-        # retrieve next set of data
+    The worker is supplied with a function and performs the function 
+    on a given share memory array in a loop.    
+    """
     
-        sfreq = int(self.get_measurement_info('sfreq'))
-        n_samples = int(win_len*sfreq)
+    def __init__(self, func, shared_mem_in, shared_mem_out):
+        self.func = func
+        self.start()
+        self.mem_in = shared_mem_in
+        self.mem_out = shared_mem_out
+        
+    def run(self):
+        mem_in = SharedMemory(self.mem_in.name)
+        mem_out = SharedMemory(self.mem_out.name)
+        
+        arr_in = np.ndarray([self.n_chs, self.sfreq*self.buffersize], 
+                              buffer=buf_shm.buf, dtype=np.float64)
+        arr_out =  np.ndarray([self.n_chs, self.sfreq*self.buffersize], 
+                              buffer=buf_shm.buf, dtype=np.float64)
 
-        raw = self.client.get_data_as_raw(n_samples=n_samples)
-        
-        if self.movement_corr:
-            chpi_amplitudes = compute_chpi_amplitudes(raw, verbose = False)
-            chpi_locs = compute_chpi_locs(raw.info, chpi_amplitudes, verbose = False)
-            head_position = compute_head_pos(raw.info, chpi_locs, verbose = False)
-        else:
-            head_position = None
-        
-        raw_sss = maxwell_filter(raw, int_order = 8, 
-                                 ext_order = 3,
-                                 head_pos = head_position, 
-                                 calibration = fine_cal_file, 
-                                 cross_talk = crosstalk_file, 
-                                 mag_scale ='auto', 
-                                 verbose = False)
-        self.data.append(raw_sss)
-        return raw_sss
-        
-        
-    def get_measurement_info(self, attr=None):
-        if not hasattr(self, 'client_info'):
-            self.client_info = self.client.get_measurement_info()
-        return self.client_info if attr is None else self.client_info[attr]
+        while True:
+            logging.debug(f'[SMW]: {self.func}')
+            time.sleep(0.1)
+
+
+
+class MaxFilterClient(Process):
+    """Live processing of data using the MaxFilter algorithm implemented by MNE
     
-
-
-class MaxFilterClient():
+    This process will create and connect to a DataClient, from which it will    
+    pull the most recent data block and perform Maxwell filtering on the chunk.
+    The results of the computation will be put into the shared variable 
+    MaxFilterClient.data
+    """
     
     def __init__(self, raw,  t_step_min=0.01, t_window='auto', ext_order=1,
                  tmin=0., tmax=None):
