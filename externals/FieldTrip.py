@@ -544,14 +544,25 @@ class Client:
 
 class FieldTripClientSimulator():
     """Simulate a data stream via random data with minimal interface"""
-    def __init__(self, hostname='irrelevant', port=0,
+    def __init__(self, raw=None, hostname='irrelevant', port=0,
                  sfreq=1000, nchan=320):
+        self.raw = raw
         self.sfreq = sfreq
         self.nchan = nchan
         self.last_times = 0
         
-    def get_data(self, chunksize=500):
-        data = np.random.rand(self.nchan, chunksize)
+    def get_data(self, t=None, chunksize=None):
+        assert (t is None) != (chunksize is None), \
+                'either t xor chunksize must be supplied'
+        if chunksize is None:
+            chunksize = int(np.round(t * self.sfreq))
+            
+        if self.raw is None:
+            data = np.random.rand(self.nchan, chunksize)-0.5
+        else:
+            start = self.last_times % len(self.raw)
+            data = self.raw.get_data(start=start, 
+                                     stop=start+chunksize)
         times = np.arange(self.last_times, self.last_times+chunksize)
         self.last_times += chunksize
         return data, times

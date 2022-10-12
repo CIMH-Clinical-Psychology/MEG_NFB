@@ -6,12 +6,7 @@ script that contains a copy of the maxfilter functions that work in realtime
 
 @author: Simon
 """
-# Authors: Mark Wronkiewicz <wronk.mark@gmail.com>
-#          Eric Larson <larson.eric.d@gmail.com>
-#          Jussi Nurminen <jnu@iki.fi>
-
-
-# License: BSD (3-clause)
+import sys
 from functools import wraps
 # from collections import Counter, OrderedDict
 # from functools import partial
@@ -27,37 +22,20 @@ from multiprocessing.managers import SharedMemoryManager
 
 from mne.io.pick import (pick_types, pick_channels, pick_channels_regexp,
                       pick_info)
-# from mne import __version__
-# from mne.annotations import _annotations_starts_stops
-# from mne.bem import _check_origin
-# from mne.transforms import (_str_to_frame, _get_trans, Transform, apply_trans,
-#                           _find_vector_rotation, _cart_to_sph, _get_n_moments,
-#                           _sph_to_cart_partials, _deg_ord_idx, _average_quats,
-#                           _sh_complex_to_real, _sh_real_to_complex, _sh_negate,
-#                           quat_to_rot, rot_to_quat)
-# from mne.forward import _concatenate_coils, _prep_meg_channels, _create_meg_coils
-# from mne.surface import _normalize_vectors
-# from mne.io.constants import FIFF, FWD
-# from mne.io.meas_info import _simplify_info, Info
-# from mne.io.proc_history import _read_ctc
-# from mne.io.write import _generate_meas_id, DATE_NONE
-# from mne.io import (_loc_to_coil_trans, _coil_trans_to_loc, BaseRaw, RawArray,
-#                   Projection)
-# from mne.utils import (verbose, logger, _clean_names, warn, _time_mask, _pl,
-#                       _check_option, _ensure_int, _validate_type, use_log_level)
-# from mne.fixes import _safe_svd, einsum, bincount
-# from mne.channels.channels import _get_T1T2_mag_inds, fix_mag_coil_types
+
+from mne.chpi import compute_chpi_amplitudes, compute_chpi_locs, compute_head_pos
+from mne.preprocessing.maxwell import maxwell_filter, find_bad_channels_maxwell
+
 from mne.chpi import  _fit_chpi_amplitudes, _time_prefix, _fit_chpi_quat_subset
 from mne.chpi import _get_hpi_initial_fit, _fit_magnetic_dipole, _check_chpi_param
-from mne.io.pick import (pick_types, pick_channels, pick_channels_regexp,
-                      pick_info)
-from mne.forward import (_create_meg_coils,  _concatenate_coils)
+from mne.io.pick import pick_types, pick_channels, pick_channels_regexp, pick_info
+from mne.forward import _create_meg_coils,  _concatenate_coils
 from mne.dipole import _make_guesses
-from mne.preprocessing.maxwell import (_sss_basis, _prep_mf_coils,
-                                    _regularize_out, _get_mf_picks_fix_mags)
-from mne.transforms import (apply_trans, invert_transform, _angle_between_quats,
-                         quat_to_rot, rot_to_quat, _fit_matched_points,
-                         _quat_to_affine)
+from mne.preprocessing.maxwell import _sss_basis, _prep_mf_coils
+from mne.preprocessing.maxwell import _get_mf_picks_fix_mags, _regularize_out
+from mne.transforms import apply_trans, invert_transform, _angle_between_quats
+from mne.transforms import quat_to_rot, rot_to_quat, _fit_matched_points
+from mne.transforms import _quat_to_affine
 from mne.utils import (verbose, logger, use_log_level, _check_fname, warn,
                     _validate_type, ProgressBar, _check_option)
 from multiprocessing import Process, Queue, shared_memory
@@ -65,7 +43,7 @@ from multiprocessing.shared_memory import SharedMemory
 from threading import Thread
 
 global glob
-glob = {'enable_caching' : False}
+glob = {'enable_caching' : True}
 
 # Note: MF uses single precision and some algorithms might use
 # truncated versions of constants (e.g., μ0), which could lead to small
@@ -90,14 +68,8 @@ compute_whitener = cached(mne.chpi.compute_whitener)
 make_ad_hoc_cov = cached(mne.chpi.make_ad_hoc_cov)
 _magnetic_dipole_field_vec = cached(mne.chpi._magnetic_dipole_field_vec)
 
-class SharedArray():
-    
-    def __init__():
-        pass
-    
-    
 
-
+logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 
 class HeadPosProcessor(Process):
     def __init__(self):
@@ -117,69 +89,113 @@ class HeadPosProcessor(Process):
 
       
 class MaxFilterCoordinator(Process):
-    """Thread that continuously fetches data in 100ms chunks from the stream
-    
-    You can access the data via this command. It is important to access it
-    with the lock ackquired, as you will create memory violations otherwise
-    
-    ```
-    with dataclient.lock:
-        data = dataclient._buffer
-    ```
-    """
     
     def _get_times(self):
         return np.ndarray(self.times.shape, dtype=self.times.dtype,
                           buffer=self.times_shm.buf)
     
-    def _get_buffer(self):
+    def _get_data(self):
         return np.ndarray(self.buffer.shape, dtype=self.buffer.dtype,
                           buffer=self.buffer_shm.buf)
     
-    def __init__(self, client, buffersize=60):
-        super(DataClient, self).__init__()
+    def __init__(self, data_client, maxfilter_client, 
+                 chunklen=1, bufferlen=60):
+        """Initializes the main process that coordinates the live processinng
+        
+        This function will first initialize the shared arrays and then run
+        itself in a separate process. Within this separate process, the 
+        references to the share memory arrays are fetched and created.
+        A loop is run that continuously fetches new data from the client
+        and stores it in the shared array.
+              
+        The coordinator process provides access to two shared memory arrays.
+        Both arrays are rolling buffers, i.e., the newest data points are 
+        always at the end of the array.
+
+            .data   - stores the actual data in format (n_chan x n_samples)
+            .times  - for each sample, stores the timepoint in seconds
+            .lock   - each time .data or .times are accessed, the lock must be 
+                      acquired before. Else there is a memory access violation
+        
+        You can access the data via this command. It is important to access it
+        with the lock ackquired, as you will create memory violations otherwise
+        
+        ```
+        with dataclient.lock:
+            data = dataclient.data
+        ```
+        
+        Parameters
+        ----------
+        client : TYPE (will later likely be mne_realtime._BaseClient)
+            a class that connects to a data stream and implements a get_data 
+            function that returns (data, times) for the latest chunk of data
+            
+        bufferlen : int, optional
+            the number of seconds that the realtime client should store in 
+            memory in its rolling buffer. The default is 60.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        super().__init__()
         
         self.lock = Lock()  # this is the master lock
+        self.data_client = data_client  # of type FieldTripClient
+        self.maxfilter_client = maxfilter_client
         
-        self.client = client  # of type FieldTripClient
-        self.buffersize = buffersize
-        self.sfreq = int(self.get_measurement_info(client, 'sfreq'))
-        self.n_chs = self.get_measurement_info(client, 'nchan')
-        self.pull_size = int(np.ceil(self.sfreq / 10))
+        self.bufferlen = bufferlen
+        self.sfreq = int(round(self.get_measurement_info(data_client, 'sfreq')))
+        self.n_chs = self.get_measurement_info(data_client, 'nchan')
+        self.chunklen = chunklen
         self._shm = {}
 
-        self._shared_arrs = {'buffer': {'shape': [self.n_chs, 
-                                                   self.sfreq*buffersize],
-                             'dtype': np.float64},
-                             'times': {'shape': [self.sfreq*self.buffersize],
-                             'dtype': np.int64,}
+        # create the specs for the shared memory arrays
+        self._shared_arrs = {'data': {'shape': [self.n_chs, 
+                                                   self.sfreq*bufferlen],
+                                        'dtype': np.float64},
+                             'times': {'shape': [self.sfreq*self.bufferlen],
+                                       'dtype': np.int64,}
                              }
-        
+        # initialize the shared memory arrays according to the specifications
+        # these arrays will be accessible by all subprocesses
+        # however, dynamical creation does not work (who knows why)
+        # TODO: fix dynamical creation
         for name, vals in self._shared_arrs.items():
             arr = np.zeros(vals['shape'], dtype=vals['dtype'])
             shm = SharedMemory(create=True, size=arr.nbytes)
             self._shared_arrs[name]['shm'] = shm # store in instance var as well
             # self.__dict__[name] = np.ndarray(vals['shape'], buffer=shm.buf, 
             #                                  dtype=vals['dtype'])
+            
+        # TODO: For now, arrays are created explicitly. 
         # create our data buffer
-        buffer = np.zeros([self.n_chs, self.sfreq*buffersize], dtype=np.float64)
-        self._shm['buffer'] = SharedMemory(create=True, size=buffer.nbytes)
-        self._buffer = np.ndarray([self.n_chs, self.sfreq*self.buffersize], 
-                             buffer=self._shm['buffer'].buf, dtype=np.float64)
+        data = np.zeros([self.n_chs, self.sfreq*bufferlen], dtype=np.float64)
+        self._shm['data'] = SharedMemory(create=True, size=data.nbytes)
+        self.data = np.ndarray([self.n_chs, self.sfreq*self.bufferlen], 
+                             buffer=self._shm['data'].buf, dtype=np.float64)
         
         # create times buffer
-        times = np.zeros([self.sfreq*buffersize], dtype=np.int64)
+        times = np.zeros([self.sfreq*bufferlen], dtype=np.int64)
         self._shm['times'] = SharedMemory(create=True, size=times.nbytes)
-        self.times = np.ndarray([self.sfreq*self.buffersize], 
+        self.times = np.ndarray([self.sfreq*self.bufferlen], 
                              buffer=self._shm['times'].buf, dtype=np.int64)
-
-
+        
+        logging.info("shared memory arrays initialized")
+        
+        
+        logging.info("initializing MaxFilterClient")
+        # self.maxfilter_client = MaxFilterClient()
 
         
     def run(self):
-        
+        logging.info('coordinator process started')
+ 
         shared_arrs = {}
-        # this does not work, I do not know why
+        # TODO fix creation of arrays dynamically does not work yet
         for name, vals in self._shared_arrs.items():
             shm_name = vals['shm'].name
 
@@ -190,43 +206,50 @@ class MaxFilterCoordinator(Process):
                                            dtype=vals['dtype'])
             shared_arrs[name] = arr
             globals()[name] = arr
-        buffer2 = shared_arrs['buffer']
+        data2 = shared_arrs['data']
+        times2 = shared_arrs['times']
 
-        print('starting process', flush=True)
+        # TODO remove time.sleep
         time.sleep(0.5)
-        buf_shm = SharedMemory(self._shm['buffer'].name)
-        times_shm= SharedMemory(self._shm['times'].name)
-        buffer = np.ndarray([self.n_chs, self.sfreq*self.buffersize], 
+        
+        # fetch references and config to the shared arrays
+        buf_shm = SharedMemory(self._shm['data'].name)
+        times_shm= SharedMemory(self._shm['data'].name)
+        
+        # recreate arrays here with buffer pointing to the shared memory
+        data = np.ndarray([self.n_chs, self.sfreq*self.bufferlen], 
                               buffer=buf_shm.buf, dtype=np.float64)
-        np.testing.assert_array_almost_equal(buffer, buffer2)
-        times = np.ndarray([self.sfreq*self.buffersize], 
+        times = np.ndarray([self.sfreq*self.bufferlen], 
                              buffer=times_shm.buf, dtype=np.int64)
+        
+        # sanity check
+        np.testing.assert_array_almost_equal(data, data2)
+        np.testing.assert_array_almost_equal(times, times2)
 
-        times = shared_arrs['times']
-
-        # times = self._get_times()
-        print('loop', flush=True)
+        logging.info("starting coordinator loop")
+       
         
         while True:
             # pulls continuously data and puts it in a rotating 
             # shared memory bufffer, i.e. the latest 100ms are always
             # stored at the end of the array
-            print('loop', flush=True)
-            data, timestamp = self.client.get_data(self.pull_size)
+            logging.debug("coordinator pulling data")
+            new_data, timestamp = self.data_client.get_data(t=self.chunklen)
+            dsize = new_data.shape[-1]
             with self.lock:
-                times[:-self.pull_size] = times[self.pull_size:]
-                times[-self.pull_size:] = timestamp
-                buffer[:, :-self.pull_size] = buffer[:, self.pull_size:]
-                buffer[:, -self.pull_size:] = data
-            time.sleep(0.25)
+                times[:-dsize] = times[dsize:]
+                times[-dsize:] = timestamp
+                data[:, :-dsize] = data[:, dsize:]
+                data[:, -dsize:] = new_data
+            time.sleep(self.chunklen)
             
-        print('done', flush=True)
+        logging.info("coordinator loop ended")
    
-    def get_measurement_info(self, client=None, attr=None):
-        if client is None: 
-            client = self.client
+    def get_measurement_info(self, data_client=None, attr=None):
+        if data_client is None: 
+            data_client = self.data_client
         if not hasattr(self, 'client_info'):
-            self.client_info = client.get_measurement_info()
+            self.client_info = data_client.get_measurement_info()
         return self.client_info if attr is None else self.client_info[attr]      
     
     
@@ -253,7 +276,7 @@ class SharedMemoryWorker(Process):
                               buffer=buf_shm.buf, dtype=np.float64)
 
         while True:
-            logging.debug(f'[SMW]: {self.func}')
+            logging.info(f'[SMW]: {self.func}')
             time.sleep(0.1)
 
 
@@ -265,18 +288,83 @@ class MaxFilterClient(Process):
     pull the most recent data block and perform Maxwell filtering on the chunk.
     The results of the computation will be put into the shared variable 
     MaxFilterClient.data
+    
+    The MaxFilter process encompasses the following steps
+    
+    1. Compute cHPI-Amplitudes (static, can probably be done before)
+        chpi_amplitudes = compute_chpi_amplitudes(raw, verbose = False)
+
+    2. Compute cHPI locations 
+        chpi_locs = compute_chpi_locs(raw.info, chpi_amplitudes, verbose = False)
+        
+    3. Compute Headposition
+        head_position = compute_head_pos(raw.info, chpi_locs, verbose = False)
+        
+    4. Actual max filtering process
+        raw_sss = maxwell_filter(raw, int_order = 8, ext_order = 3, head_pos = head_position, calibration = fine_cal_file, cross_talk = crosstalk_file, mag_scale ='auto', verbose = False)
+        print('End Maxwell filtering.\n')
+    
+    
     """
     
     def __init__(self, raw,  t_step_min=0.01, t_window='auto', ext_order=1,
                  tmin=0., tmax=None):
-        
+        super().__init__()
         self.t_step_min = t_step_min
         self.t_window = t_window
         self.ext_order = ext_order
         self.tmin = tmin
         self.tmax = tmax
         self.raw = raw
+        self.crosstalk_file = './calibration_files/ct_sparse.fif'
+        self.fine_cal_file = './calibration_files/sss_cal.dat'
+        logging.warn('replacing ct and finecal loading functions with buffered ones')
+        mne.preprocessing.maxwell._read_cross_talk = cached(mne.preprocessing.maxwell._read_cross_talk)
+        mne.preprocessing._fine_cal.read_fine_calibration = cached(mne.preprocessing._fine_cal.read_fine_calibration)
+
         self.preparation()
+        
+    def maxfilter_monolithic(self, chunk):
+        """monolithic function that applies maxfiltering monolithically
+
+        Returns
+        -------
+        None.
+
+        """
+        info_obj = self.raw.info
+        raw = mne.io.RawArray(chunk, info_obj, verbose = False)
+        
+        # ##### Bad channel detection
+        # with stimer('bad channels'):
+        #     auto_noisy_chs, auto_flat_chs = find_bad_channels_maxwell(raw,
+        #                                                           cross_talk = self.crosstalk_file, 
+        #                                                           calibration = self.fine_cal_file, 
+        #                                                           verbose = False)
+        # bads = raw.info['bads'] + auto_noisy_chs + auto_flat_chs
+        # raw.info['bads'] = bads
+        
+        # ##### cHPI processing
+        # with stimer('chpi_amplitudes'):
+        #     chpi_amplitudes = compute_chpi_amplitudes(raw, verbose = False)
+
+        # # Calculate HPI coil locations from amplitudes
+        # with stimer('chpi_locs'):
+        #     chpi_locs = compute_chpi_locs(raw.info, chpi_amplitudes, verbose = False)
+
+        # # Calculate continuous head position from HPI coil amplitudes and locations
+        # with stimer('head_pos'):
+        #     head_position = compute_head_pos(raw.info, chpi_locs, verbose = False)
+                
+        ##### Run Maxwell filtering on current chunk
+        with stimer('maxfilter'):
+            raw_sss = maxwell_filter(raw, int_order = 8, ext_order = 3,
+                                 # head_pos = head_position, 
+                                 calibration = self.fine_cal_file,
+                                 cross_talk = self.crosstalk_file, 
+                                 mag_scale ='auto', 
+                                 verbose = False)
+        return raw_sss.get_data()
 
     def preparation(self):
         raw = self.raw.copy().crop(0,0.2)
@@ -288,7 +376,7 @@ class MaxFilterClient(Process):
         meg_picks = pick_channels(
             raw.info['ch_names'], proj['data']['col_names'], ordered=True)
         raw.info = pick_info(raw.info, meg_picks)  # makes a copy
-        raw.info['projs'] = [proj]
+        raw.add_proj(proj)
         
         meg_coils = _concatenate_coils(_create_meg_coils(raw.info['chs'], 'accurate'))
 
@@ -323,8 +411,9 @@ class MaxFilterClient(Process):
         #
         sin_fit = _fit_chpi_amplitudes(raw, time_sl, self.hpi)
 
-        #%% static part def compute_chpi_locs(info, chpi_amplitudes, t_step_max=1., too_close='raise',
+        #%% 1. (static) def compute_chpi_locs(info, chpi_amplitudes, t_step_max=1., too_close='raise',
                           # adjust_dig=False, verbose=None):
+        # this is done only once in the preparation()
         # Set up magnetic dipole fits
     
         # proj = sin_fits['proj']
@@ -355,7 +444,8 @@ class MaxFilterClient(Process):
         # fwd = np.linalg.svd(fwd, full_matrices=False)[2]
         # guesses = dict(rr=self.guesses, whitened_fwd_svd=fwd)
         # del fwd
-        #%% def compute_chpi_locs
+        #%% 2. compute_chpi_locs
+        # computes the locations of the current window
         
         # skip this window if bad
         if not np.isfinite(sin_fit).all():
